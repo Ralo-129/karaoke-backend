@@ -1,0 +1,48 @@
+# Virtual environment
+.venv/
+antenv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+
+# Generated data
+app/data/uploads/
+app/data/outputs/
+app/data/chunks/
+app/data/whisper-models/
+
+# ML models
+*.pt
+*.bin
+
+# Audio/video files
+*.wav
+*.mp3
+*.mp4
+
+# Environment files
+.env
+.env.local
+
+# Git
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Docs & config
+*.md
+nixpacks.toml
+
+# Tests
+app/tests/
+
+# OS
+.DS_Store
+Thumbs.db
