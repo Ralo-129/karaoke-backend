@@ -58,21 +58,15 @@ def align_to_lrc(reference: str, words: list[dict]) -> str:
 
     ref_norm = [t["norm"] for t in ref_tokens]
 
-    # 3) Align the two word sequences and copy timestamps onto the reference.
+    # 3) Use only confident matches ("equal") as time anchors. Words in mismatched
+    # regions (replace/delete) are left without a time and spread evenly between
+    # the surrounding anchors below — this avoids piling many words on the same
+    # timestamp when the transcription missed or misheard a section.
     matcher = SequenceMatcher(None, ref_norm, hyp_norm, autojunk=False)
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             for k in range(i2 - i1):
                 ref_tokens[i1 + k]["time"] = hyp_time[j1 + k]
-        elif tag == "replace":
-            n_ref = i2 - i1
-            n_hyp = j2 - j1
-            for k in range(n_ref):
-                if n_hyp > 0:
-                    jj = j1 + min(n_hyp - 1, (k * n_hyp) // max(1, n_ref))
-                    ref_tokens[i1 + k]["time"] = hyp_time[jj]
-        # "delete": reference words with no match -> left None, interpolated below.
-        # "insert": extra transcription words -> ignored.
 
     _fill_missing_times(ref_tokens)
 
@@ -99,23 +93,31 @@ def align_to_lrc(reference: str, words: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# Minimum spacing between consecutive words so no two ever share a timestamp
+# (which would make whole lines pile up on the same time tag).
+_MIN_GAP = 0.08
+
+
 def _fill_missing_times(ref_tokens: list[dict]) -> None:
-    """Interpolate ``None`` times between known anchors and enforce monotonic order."""
+    """Fill ``None`` times by spreading words evenly between anchors, then enforce
+    strictly increasing timestamps so lines never pile on the same time."""
     n = len(ref_tokens)
     known = [i for i, t in enumerate(ref_tokens) if t["time"] is not None]
 
     if not known:
         # No anchors at all: spread evenly (last resort).
         for i, t in enumerate(ref_tokens):
-            t["time"] = float(i)
+            t["time"] = float(i) * 0.4
         return
 
-    # Leading None -> first known time.
+    # Leading None -> spread from 0 up to the first anchor (keep the anchor put).
     first = known[0]
-    for i in range(first):
-        ref_tokens[i]["time"] = ref_tokens[first]["time"]
+    if first > 0:
+        t1 = ref_tokens[first]["time"]
+        for i in range(first):
+            ref_tokens[i]["time"] = t1 * (i + 1) / (first + 1)
 
-    # Gaps between anchors -> linear interpolation.
+    # Gaps between anchors -> spread words evenly across the time span.
     for a, b in zip(known, known[1:]):
         if b - a > 1:
             t0 = ref_tokens[a]["time"]
@@ -127,9 +129,10 @@ def _fill_missing_times(ref_tokens: list[dict]) -> None:
     # Trailing None -> keep increasing slightly after the last anchor.
     last = known[-1]
     for i in range(last + 1, n):
-        ref_tokens[i]["time"] = ref_tokens[i - 1]["time"] + 0.3
+        ref_tokens[i]["time"] = ref_tokens[i - 1]["time"] + 0.4
 
-    # Enforce non-decreasing times (the player expects monotonic timestamps).
+    # Enforce STRICTLY increasing times. This is what prevents several lines from
+    # sharing one timestamp when the transcription lost sync in a section.
     for i in range(1, n):
-        if ref_tokens[i]["time"] < ref_tokens[i - 1]["time"]:
-            ref_tokens[i]["time"] = ref_tokens[i - 1]["time"]
+        if ref_tokens[i]["time"] <= ref_tokens[i - 1]["time"]:
+            ref_tokens[i]["time"] = ref_tokens[i - 1]["time"] + _MIN_GAP
