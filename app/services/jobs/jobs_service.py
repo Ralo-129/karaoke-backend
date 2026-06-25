@@ -356,19 +356,32 @@ class JobsService:
                 extracted_lrc = manual_lyrics
                 preview = build_preview(extracted_lrc)
             elif extract_lyrics:
-                # No timed LRC. Transcribe with Whisper. If plain-text lyrics were
-                # pasted, pass them as a hint so Whisper gets the words right.
-                self._jobs.set_status(job_id, "processing", 45, f"Transcribiendo letras ({profile_key})...")
-                extracted_lrc = self._transcription.transcribe_lrc(
-                    audio_bytes,
-                    title or "",
-                    artist or "",
-                    model_name=whisper_model,
-                    beam_size=whisper_beam_size,
-                    best_of=whisper_best_of,
-                    use_word_timestamps=word_timestamps,
-                    hint_lyrics=manual_lyrics or None,
-                )
+                if manual_lyrics:
+                    # The user pasted the real lyrics (plain text): use them as the
+                    # source of truth and only compute the timing from the audio
+                    # (words 100% correct).
+                    self._jobs.set_status(job_id, "processing", 45, "Sincronizando letra proporcionada...")
+                    extracted_lrc = self._transcription.transcribe_aligned_lrc(
+                        audio_bytes,
+                        manual_lyrics,
+                        title or "",
+                        artist or "",
+                        model_name=whisper_model,
+                        beam_size=whisper_beam_size,
+                        best_of=whisper_best_of,
+                    )
+                else:
+                    # No reference lyrics: plain transcription.
+                    self._jobs.set_status(job_id, "processing", 45, f"Transcribiendo letras ({profile_key})...")
+                    extracted_lrc = self._transcription.transcribe_lrc(
+                        audio_bytes,
+                        title or "",
+                        artist or "",
+                        model_name=whisper_model,
+                        beam_size=whisper_beam_size,
+                        best_of=whisper_best_of,
+                        use_word_timestamps=word_timestamps,
+                    )
                 preview = build_preview(extracted_lrc)
             elif manual_lyrics:
                 # Transcription disabled but plain lyrics provided: store the text

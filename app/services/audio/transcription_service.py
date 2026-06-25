@@ -5,6 +5,7 @@ import uuid
 
 from app.core.config import Settings
 from app.services.audio.conversion_service import AudioConversionService
+from app.services.audio.lyrics_aligner import align_to_lrc
 from app.services.audio.model_manager import get_whisper_model
 
 # Whisper transcription utilities. Uses Groq's hosted Whisper Large v3 when a
@@ -33,31 +34,68 @@ class TranscriptionService:
         use_word_timestamps: bool = True,
         hint_lyrics: str | None = None,
     ) -> str:
+        """Plain transcription -> LRC (words come from the speech-to-text)."""
         context_prompt = self._build_prompt(title, artist, hint_lyrics)
-
         try:
-            if self._settings.groq_api_key:
-                try:
-                    return self._transcribe_groq(
-                        audio_bytes, context_prompt, use_word_timestamps, temperature
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Groq transcription failed (%s). Falling back to local Whisper.", exc
-                    )
-
-            return self._transcribe_local(
+            segments = self._get_segments(
                 audio_bytes,
                 context_prompt,
+                use_word_timestamps=use_word_timestamps,
+                temperature=temperature,
                 model_name=model_name,
                 device=device,
                 beam_size=beam_size,
                 best_of=best_of,
-                temperature=temperature,
-                use_word_timestamps=use_word_timestamps,
             )
+            return self._build_lrc(segments, use_word_timestamps)
         except Exception as exc:
             logger.error("Transcription error: %s", exc)
+            return ""
+
+    def transcribe_aligned_lrc(
+        self,
+        audio_bytes: bytes,
+        reference_lyrics: str,
+        title: str = "",
+        artist: str = "",
+        *,
+        model_name: str | None = None,
+        device: str | None = None,
+        beam_size: int | None = None,
+        best_of: int | None = None,
+        temperature: float = 0.0,
+    ) -> str:
+        """Aligns the user's reference lyrics to the transcription timings.
+
+        The WORDS come from ``reference_lyrics`` (100% correct) and the TIMES from
+        the transcription. Falls back to plain transcription if alignment is not
+        possible. Word timestamps are always requested (needed to align)."""
+        context_prompt = self._build_prompt(title, artist, reference_lyrics)
+        try:
+            segments = self._get_segments(
+                audio_bytes,
+                context_prompt,
+                use_word_timestamps=True,
+                temperature=temperature,
+                model_name=model_name,
+                device=device,
+                beam_size=beam_size,
+                best_of=best_of,
+            )
+            words = [
+                {"start": w["start"], "word": w["word"]}
+                for seg in segments
+                for w in (seg.get("words") or [])
+            ]
+            if words:
+                aligned = align_to_lrc(reference_lyrics, words)
+                if aligned.strip():
+                    logger.info("Lyrics aligned to reference (%d words).", len(words))
+                    return aligned
+            logger.warning("Could not align lyrics; falling back to plain transcription.")
+            return self._build_lrc(segments, True)
+        except Exception as exc:
+            logger.error("Aligned transcription error: %s", exc)
             return ""
 
     # ----------------------------------------------------------------- helpers
@@ -69,16 +107,18 @@ class TranscriptionService:
         return getattr(obj, key, default)
 
     def _build_prompt(self, title: str, artist: str, hint_lyrics: str | None) -> str:
-        context_prompt = "Transcribe la letra de una cancion en espanol. "
-        if title or artist:
-            context_prompt += f"La cancion se llama '{title}' y es de '{artist}'. "
-        context_prompt += "Corrige palabras lo mejor posible sin resumir ni traducir."
+        # Whisper/Groq use the prompt as vocabulary/style context, so we prime it
+        # with the song's name and (when available) a sample of the real lyrics.
+        parts: list[str] = []
+        if title and artist:
+            parts.append(f"Cancion: {title} - {artist}.")
+        elif title:
+            parts.append(f"Cancion: {title}.")
+        parts.append("Letra de cancion en espanol, con puntuacion natural.")
         if hint_lyrics:
-            # Bias the model toward the real words. The prompt window is limited,
-            # so cap the hint length.
             snippet = " ".join(hint_lyrics.split())[:600]
-            context_prompt += f" Letra de referencia: {snippet}"
-        return context_prompt
+            parts.append(f"Letra de referencia: {snippet}")
+        return " ".join(parts)
 
     def _build_lrc(self, segments: list[dict], use_word_timestamps: bool) -> str:
         """Builds the LRC string from a normalized list of segments
@@ -110,6 +150,36 @@ class TranscriptionService:
 
         return "\n".join(lrc_lines)
 
+    def _get_segments(
+        self,
+        audio_bytes: bytes,
+        context_prompt: str,
+        *,
+        use_word_timestamps: bool,
+        temperature: float,
+        model_name: str | None,
+        device: str | None,
+        beam_size: int | None,
+        best_of: int | None,
+    ) -> list[dict]:
+        """Returns normalized segments using Groq when available, else local Whisper."""
+        if self._settings.groq_api_key:
+            try:
+                return self._transcribe_groq(audio_bytes, context_prompt, use_word_timestamps, temperature)
+            except Exception as exc:
+                logger.warning("Groq transcription failed (%s). Falling back to local Whisper.", exc)
+
+        return self._transcribe_local(
+            audio_bytes,
+            context_prompt,
+            model_name=model_name,
+            device=device,
+            beam_size=beam_size,
+            best_of=best_of,
+            temperature=temperature,
+            use_word_timestamps=use_word_timestamps,
+        )
+
     # ------------------------------------------------------------------- Groq
 
     def _transcribe_groq(
@@ -118,7 +188,7 @@ class TranscriptionService:
         context_prompt: str,
         use_word_timestamps: bool,
         temperature: float,
-    ) -> str:
+    ) -> list[dict]:
         from groq import Groq
 
         # Compress to mono 16 kHz MP3 to stay well under Groq's 25 MB limit.
@@ -158,7 +228,7 @@ class TranscriptionService:
 
             normalized.append({"start": s_start, "text": s_text, "words": seg_words})
 
-        return self._build_lrc(normalized, use_word_timestamps)
+        return normalized
 
     # ------------------------------------------------------------------ local
 
@@ -173,7 +243,7 @@ class TranscriptionService:
         best_of: int | None,
         temperature: float,
         use_word_timestamps: bool,
-    ) -> str:
+    ) -> list[dict]:
         temp_path = self._settings.data_dir / f"temp-audio-{uuid.uuid4().hex}.wav"
         try:
             temp_path.write_bytes(audio_bytes)
@@ -205,6 +275,6 @@ class TranscriptionService:
                     words = [{"start": w["start"], "word": w["word"]} for w in seg["words"]]
                 normalized.append({"start": seg["start"], "text": seg["text"], "words": words})
 
-            return self._build_lrc(normalized, use_word_timestamps)
+            return normalized
         finally:
             temp_path.unlink(missing_ok=True)

@@ -1,0 +1,135 @@
+from __future__ import annotations
+
+import re
+import unicodedata
+from difflib import SequenceMatcher
+
+# Aligns user-provided reference lyrics (the correct words) to a transcription's
+# word timestamps, producing an LRC where the WORDS come from the reference and
+# the TIMES come from the transcription. This gives perfect words with reasonable
+# timing, even when the speech-to-text mishears the song.
+
+
+def _normalize(word: str) -> str:
+    """Lowercase + strip accents + keep alphanumerics, for matching only."""
+    decomposed = unicodedata.normalize("NFKD", word)
+    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]", "", stripped.lower())
+
+
+def _fmt(t: float) -> str:
+    if t < 0:
+        t = 0.0
+    m = int(t // 60)
+    s = int(t % 60)
+    c = int((t % 1) * 100)
+    return f"{m:02d}:{s:02d}.{c:02d}"
+
+
+def align_to_lrc(reference: str, words: list[dict]) -> str:
+    """Builds an LRC string from reference lyrics + transcription word timings.
+
+    - ``reference``: plain-text lyrics (lines separated by newlines).
+    - ``words``: ordered ``[{"start": float, "word": str}, ...]`` from the
+      transcription.
+
+    Returns an LRC string (``[mm:ss.cc] <mm:ss.cc> palabra ...``) or ``""`` if it
+    can't produce anything (caller should fall back to plain transcription).
+    """
+    # 1) Reference tokens, keeping their line so we can rebuild line breaks.
+    ref_tokens: list[dict] = []
+    for line_idx, line in enumerate(reference.splitlines()):
+        for raw in line.split():
+            norm = _normalize(raw)
+            if norm:
+                ref_tokens.append({"line": line_idx, "word": raw, "norm": norm, "time": None})
+
+    # 2) Transcription tokens (drop ones that normalize to nothing).
+    hyp_norm: list[str] = []
+    hyp_time: list[float] = []
+    for w in words:
+        norm = _normalize(str(w.get("word", "")))
+        if norm:
+            hyp_norm.append(norm)
+            hyp_time.append(float(w.get("start") or 0.0))
+
+    if not ref_tokens or not hyp_time:
+        return ""
+
+    ref_norm = [t["norm"] for t in ref_tokens]
+
+    # 3) Align the two word sequences and copy timestamps onto the reference.
+    matcher = SequenceMatcher(None, ref_norm, hyp_norm, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                ref_tokens[i1 + k]["time"] = hyp_time[j1 + k]
+        elif tag == "replace":
+            n_ref = i2 - i1
+            n_hyp = j2 - j1
+            for k in range(n_ref):
+                if n_hyp > 0:
+                    jj = j1 + min(n_hyp - 1, (k * n_hyp) // max(1, n_ref))
+                    ref_tokens[i1 + k]["time"] = hyp_time[jj]
+        # "delete": reference words with no match -> left None, interpolated below.
+        # "insert": extra transcription words -> ignored.
+
+    _fill_missing_times(ref_tokens)
+
+    # 4) Rebuild LRC grouped by reference line.
+    lines: list[str] = []
+    current_line = None
+    current_words: list[dict] = []
+
+    def flush():
+        if not current_words:
+            return
+        start = current_words[0]["time"]
+        body = "".join(f"<{_fmt(t['time'])}> {t['word']} " for t in current_words).strip()
+        lines.append(f"[{_fmt(start)}] {body}")
+
+    for tok in ref_tokens:
+        if tok["line"] != current_line:
+            flush()
+            current_line = tok["line"]
+            current_words = []
+        current_words.append(tok)
+    flush()
+
+    return "\n".join(lines)
+
+
+def _fill_missing_times(ref_tokens: list[dict]) -> None:
+    """Interpolate ``None`` times between known anchors and enforce monotonic order."""
+    n = len(ref_tokens)
+    known = [i for i, t in enumerate(ref_tokens) if t["time"] is not None]
+
+    if not known:
+        # No anchors at all: spread evenly (last resort).
+        for i, t in enumerate(ref_tokens):
+            t["time"] = float(i)
+        return
+
+    # Leading None -> first known time.
+    first = known[0]
+    for i in range(first):
+        ref_tokens[i]["time"] = ref_tokens[first]["time"]
+
+    # Gaps between anchors -> linear interpolation.
+    for a, b in zip(known, known[1:]):
+        if b - a > 1:
+            t0 = ref_tokens[a]["time"]
+            t1 = ref_tokens[b]["time"]
+            step = (t1 - t0) / (b - a)
+            for k in range(a + 1, b):
+                ref_tokens[k]["time"] = t0 + step * (k - a)
+
+    # Trailing None -> keep increasing slightly after the last anchor.
+    last = known[-1]
+    for i in range(last + 1, n):
+        ref_tokens[i]["time"] = ref_tokens[i - 1]["time"] + 0.3
+
+    # Enforce non-decreasing times (the player expects monotonic timestamps).
+    for i in range(1, n):
+        if ref_tokens[i]["time"] < ref_tokens[i - 1]["time"]:
+            ref_tokens[i]["time"] = ref_tokens[i - 1]["time"]
