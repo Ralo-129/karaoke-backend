@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -48,23 +49,15 @@ def create_app() -> FastAPI:
     # that trigger model downloads use the configured cache location.
     from app.routes import catalog, jobs, separate
 
-    app = FastAPI(title=settings.app_title)
-    add_logging_middleware(app)
-    add_error_handlers(app)
-
-    app.include_router(catalog.router)
-    app.include_router(separate.router)
-    app.include_router(jobs.router)
-
-    @app.on_event("startup")
-    def on_startup() -> None:
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
         get_storage_service().ensure_buckets()
         ffmpeg_path = shutil.which("ffmpeg")
         if ffmpeg_path:
             logger.info("ffmpeg detected at startup: %s", ffmpeg_path)
         else:
             logger.warning(
-                "ffmpeg was not found in PATH at startup. Video uploads will fail until the Railway image installs ffmpeg."
+                "ffmpeg was not found in PATH at startup. Video uploads will fail until the host installs ffmpeg."
             )
         # Optionally preload ML models into memory (controlled by PRELOAD_MODELS).
         try:
@@ -75,50 +68,19 @@ def create_app() -> FastAPI:
         except Exception:
             # Keep startup resilient if model preload fails or Demucs/Whisper not installed.
             pass
+        yield
+
+    app = FastAPI(title=settings.app_title, lifespan=lifespan)
+    add_logging_middleware(app)
+    add_error_handlers(app)
+
+    app.include_router(catalog.router)
+    app.include_router(separate.router)
+    app.include_router(jobs.router)
 
     @app.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
-
-    @app.get("/internal/models")
-    def internal_models() -> dict:
-        """Returns configured model names and whether they're loaded in this process.
-
-        Notes: This endpoint intentionally does NOT load models if they're not
-        already cached. It inspects the lru_cache statistics to determine
-        whether a model is present in the cache.
-        """
-        from app.services.audio import model_manager
-
-        whisper_cfg = {
-            "configured": settings.whisper_model,
-            "device": settings.whisper_device,
-            "loaded": bool(getattr(model_manager.get_whisper_model, "cache_info")().currsize),
-        }
-
-        demucs_cfg = {
-            "configured": settings.demucs_model,
-            "device": settings.demucs_device,
-            "loaded": bool(getattr(model_manager.get_demucs_model, "cache_info")().currsize),
-        }
-
-        # If models are loaded, return a small identifying string; do NOT
-        # call loaders if not loaded to avoid allocating memory here.
-        if whisper_cfg["loaded"]:
-            try:
-                model = model_manager.get_whisper_model(settings.whisper_model, str(settings.whisper_download_root), device=settings.whisper_device)
-                whisper_cfg["repr"] = type(model).__name__
-            except Exception:
-                whisper_cfg["repr"] = "(error reading instance)"
-
-        if demucs_cfg["loaded"]:
-            try:
-                model = model_manager.get_demucs_model(settings.demucs_model, device=settings.demucs_device)
-                demucs_cfg["repr"] = type(model).__name__
-            except Exception:
-                demucs_cfg["repr"] = "(error reading instance)"
-
-        return {"whisper": whisper_cfg, "demucs": demucs_cfg}
 
     return app
 

@@ -27,20 +27,19 @@ CREATE INDEX IF NOT EXISTS idx_songs_artist ON songs(artist);
 ALTER TABLE songs ENABLE ROW LEVEL SECURITY;
 
 -- Policies
--- 1. Everyone can read all songs
+-- 1. Everyone can read all songs (the catalog is meant to be public).
 DROP POLICY IF EXISTS "Public read" ON songs;
 CREATE POLICY "Public read" ON songs
     FOR SELECT USING (true);
 
--- 2. Authenticated users can insert
+-- 2/3. Writes and deletes are intentionally NOT exposed to anon/authenticated
+-- roles. The backend connects with the Supabase SERVICE ROLE key, which bypasses
+-- RLS, so inserts/updates/deletes only happen through the backend (which also
+-- guards destructive endpoints with X-Admin-Token). This prevents anyone with
+-- the public URL from wiping the catalog directly against Supabase.
+-- Drop the old wide-open policies if they exist from a previous setup:
 DROP POLICY IF EXISTS "Authenticated write" ON songs;
-CREATE POLICY "Authenticated write" ON songs
-    FOR INSERT WITH CHECK (true);
-
--- 3. Authenticated users can delete
 DROP POLICY IF EXISTS "Authenticated delete" ON songs;
-CREATE POLICY "Authenticated delete" ON songs
-    FOR DELETE USING (true);
 
 -- Create storage buckets (can also be done via UI or API on first upload)
 -- These may fail with 403 if bucket already exists - that's OK

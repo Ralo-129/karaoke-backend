@@ -21,6 +21,7 @@ class Settings:
     supabase_url: str
     supabase_key: str
     supabase_secret: str
+    admin_token: str
     demucs_model: str
     demucs_device: str
     whisper_model: str
@@ -30,6 +31,8 @@ class Settings:
     whisper_best_of: int
     whisper_download_root: Path
     preload_models: bool
+    groq_api_key: str
+    groq_model: str
     app_title: str = "karaoke-backend"
 
 
@@ -76,7 +79,12 @@ def get_settings() -> Settings:
     uploads_bucket = os.getenv("UPLOADS_BUCKET", "uploads").strip() or "uploads"
     outputs_bucket = os.getenv("OUTPUTS_BUCKET", "outputs").strip() or "outputs"
 
-    demucs_model = os.getenv("DEMUCS_MODEL", "htdemucs_6s").strip() or "htdemucs_6s"
+    # Shared secret required for destructive endpoints (delete song / reset catalog).
+    admin_token = os.getenv("ADMIN_TOKEN", "").strip()
+
+    # Default to the lighter 4-stem model. "htdemucs_6s" (6 stems) is heavier and
+    # unnecessary for karaoke (we only need "everything except vocals").
+    demucs_model = os.getenv("DEMUCS_MODEL", "htdemucs").strip() or "htdemucs"
     demucs_device = os.getenv("DEMUCS_DEVICE", "cpu").strip() or "cpu"
 
     # Prefer a smaller Whisper model by default for low-memory deploys.
@@ -90,6 +98,14 @@ def get_settings() -> Settings:
     )
     preload_models = _bool_env("PRELOAD_MODELS", False)
 
+    # Groq Speech-to-Text. If GROQ_API_KEY is set, transcription uses Groq's
+    # hosted Whisper Large v3 (faster + frees local RAM); otherwise it falls
+    # back to the local openai-whisper model.
+    groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
+    # Default to the most accurate model (best lyrics). Since transcription is a
+    # remote service now, there's no local performance cost to using it.
+    groq_model = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3").strip() or "whisper-large-v3"
+
     settings = Settings(
         app_root=app_root,
         data_dir=data_dir,
@@ -99,6 +115,7 @@ def get_settings() -> Settings:
         supabase_url=supabase_url,
         supabase_key=supabase_key,
         supabase_secret=supabase_secret,
+        admin_token=admin_token,
         demucs_model=demucs_model,
         demucs_device=demucs_device,
         whisper_model=whisper_model,
@@ -108,6 +125,8 @@ def get_settings() -> Settings:
         whisper_best_of=whisper_best_of,
         whisper_download_root=whisper_download_root,
         preload_models=preload_models,
+        groq_api_key=groq_api_key,
+        groq_model=groq_model,
     )
     _ensure_directories(settings)
     return settings

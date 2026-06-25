@@ -24,19 +24,38 @@ from app.services.storage.storage_service import StorageService
 
 logger = logging.getLogger(__name__)
 
+# Matches an LRC time tag like "[00:12.34]" or "[1:02]". If pasted lyrics contain
+# these, they're already synced and we can skip Whisper entirely.
+_LRC_TIMESTAMP_RE = re.compile(r"\[\d{1,2}:\d{2}(?:\.\d{1,2})?\]")
 
+
+# Notes on resource usage:
+# - Lyrics: transcription runs on Groq (Whisper Large v3) at full quality for ALL
+#   profiles, so word_timestamps is True everywhere (word-by-word karaoke). The
+#   whisper_model / beam / best_of values only matter for the LOCAL fallback when
+#   GROQ_API_KEY is empty or Groq fails.
+# - The 3 profiles really only differ in the INSTRUMENTAL (Demucs), which is the
+#   heavy local step:
+#   - demucs_model: "htdemucs" (4 stems) is much lighter than "htdemucs_6s" (6 stems).
+#   - demucs_shifts: test-time augmentation passes. 0 = fastest, each extra shift
+#     roughly multiplies separation time.
+#   - demucs_overlap: window overlap between chunks. Lower = faster, slightly lower quality.
 PROCESSING_PROFILES: dict[str, dict[str, object]] = {
     "rapido": {
-        "whisper_model": "tiny",
-        "demucs_model": "htdemucs_6s",
+        "whisper_model": "base",
+        "demucs_model": "htdemucs",
+        "demucs_shifts": 0,
+        "demucs_overlap": 0.1,
         "mp3_quality": 9,
-        "whisper_beam_size": 3,
-        "whisper_best_of": 3,
+        "whisper_beam_size": 5,
+        "whisper_best_of": 5,
         "word_timestamps": True,
     },
     "balanceado": {
         "whisper_model": "base",
         "demucs_model": "htdemucs",
+        "demucs_shifts": 1,
+        "demucs_overlap": 0.25,
         "mp3_quality": 4,
         "whisper_beam_size": 5,
         "whisper_best_of": 5,
@@ -45,10 +64,12 @@ PROCESSING_PROFILES: dict[str, dict[str, object]] = {
     "maxima_calidad": {
         "whisper_model": "small",
         "demucs_model": "htdemucs",
+        "demucs_shifts": 2,
+        "demucs_overlap": 0.25,
         "mp3_quality": 0,
         "whisper_beam_size": 8,
         "whisper_best_of": 8,
-        "word_timestamps": False,
+        "word_timestamps": True,
     },
 }
 
@@ -175,6 +196,7 @@ class JobsService:
         filename: str | None,
         title: str | None,
         artist: str | None,
+        lyrics: str = "",
         tags: str,
         processing_profile: str | None = None,
         extract_lyrics: bool = True,
@@ -204,14 +226,16 @@ class JobsService:
 
         require_title_artist(title, artist)
 
-        # 1. Create immediate placeholder in DB BEFORE background task
+        # 1. Create immediate placeholder in DB BEFORE background task.
+        # Store the public Supabase URL so the file streams directly from Supabase
+        # (no backend in the playback path).
         placeholder_record = SongRecord(
             job_id=chunk_result.job_id,
             title=title.strip() if title else Path(chunk_result.filename).stem,
             artist=artist.strip() if artist else "Artista desconocido",
             tags=normalize_tags(tags),
             status="processing",
-            video_url=f"/uploads/{chunk_result.job_id}/{chunk_result.filename}",
+            video_url=self._storage.upload_public_url(chunk_result.job_id, chunk_result.filename),
         )
         self._songs.insert_song(placeholder_record)
 
@@ -230,6 +254,7 @@ class JobsService:
                 filename=chunk_result.filename,
                 title=title,
                 artist=artist,
+                lyrics=lyrics,
                 tags=tags,
                 processing_profile=processing_profile,
                 extract_lyrics=extract_lyrics,
@@ -247,6 +272,7 @@ class JobsService:
             filename=chunk_result.filename,
             title=title,
             artist=artist,
+            lyrics=lyrics,
             tags=tags,
             processing_profile=processing_profile,
             extract_lyrics=extract_lyrics,
@@ -261,6 +287,7 @@ class JobsService:
         filename: str,
         title: str | None,
         artist: str | None,
+        lyrics: str = "",
         tags: str,
         processing_profile: str | None = None,
         extract_lyrics: bool = True,
@@ -275,13 +302,17 @@ class JobsService:
             whisper_beam_size = int(profile["whisper_beam_size"])
             whisper_best_of = int(profile["whisper_best_of"])
             word_timestamps = bool(profile["word_timestamps"])
+            demucs_shifts = int(profile.get("demucs_shifts", 1))
+            demucs_overlap = float(profile.get("demucs_overlap", 0.25))
 
             logger.info(
-                "Job %s using profile=%s whisper=%s demucs=%s mp3_quality=%s beam=%s best_of=%s words=%s lyrics=%s instrumental=%s",
+                "Job %s using profile=%s whisper=%s demucs=%s shifts=%s overlap=%s mp3_quality=%s beam=%s best_of=%s words=%s lyrics=%s instrumental=%s",
                 job_id,
                 profile_key,
                 whisper_model,
                 demucs_model,
+                demucs_shifts,
+                demucs_overlap,
                 mp3_quality,
                 whisper_beam_size,
                 whisper_best_of,
@@ -313,9 +344,20 @@ class JobsService:
                 temp_input.unlink(missing_ok=True)
                 temp_wav.unlink(missing_ok=True)
 
+            manual_lyrics = (lyrics or "").strip()
             extracted_lrc = None
             preview = None
-            if extract_lyrics:
+
+            if manual_lyrics and _LRC_TIMESTAMP_RE.search(manual_lyrics):
+                # The user pasted an already-timed LRC: use it verbatim and skip
+                # Whisper entirely (biggest CPU/RAM saving).
+                self._jobs.set_status(job_id, "processing", 45, "Usando letra LRC proporcionada...")
+                logger.info("Job %s: using pasted LRC, skipping Whisper.", job_id)
+                extracted_lrc = manual_lyrics
+                preview = build_preview(extracted_lrc)
+            elif extract_lyrics:
+                # No timed LRC. Transcribe with Whisper. If plain-text lyrics were
+                # pasted, pass them as a hint so Whisper gets the words right.
                 self._jobs.set_status(job_id, "processing", 45, f"Transcribiendo letras ({profile_key})...")
                 extracted_lrc = self._transcription.transcribe_lrc(
                     audio_bytes,
@@ -325,17 +367,28 @@ class JobsService:
                     beam_size=whisper_beam_size,
                     best_of=whisper_best_of,
                     use_word_timestamps=word_timestamps,
+                    hint_lyrics=manual_lyrics or None,
                 )
+                preview = build_preview(extracted_lrc)
+            elif manual_lyrics:
+                # Transcription disabled but plain lyrics provided: store the text
+                # so it shows (not word-synced, but better than nothing).
+                extracted_lrc = manual_lyrics
                 preview = build_preview(extracted_lrc)
 
             if generate_instrumental:
                 self._jobs.set_status(job_id, "processing", 65, f"Separando voz ({profile_key})...")
-                instrumental_bytes, _ = self._separation.separate(
-                    file_bytes,
+                # Reuse the WAV we already extracted for transcription so Demucs
+                # doesn't run ffmpeg a second time on the same file.
+                instrumental_bytes = self._separation.separate(
+                    audio_bytes,
                     filename,
                     job_id,
                     model_name=demucs_model,
                     mp3_quality=mp3_quality,
+                    shifts=demucs_shifts,
+                    overlap=demucs_overlap,
+                    already_wav=True,
                 )
 
                 self._jobs.set_status(job_id, "processing", 80, "Subiendo instrumental...")
@@ -356,8 +409,12 @@ class JobsService:
                 lrc_preview=preview,
                 lrc=extracted_lrc,
                 tags=normalize_tags(tags),
-                video_url=f"/uploads/{job_id}/{filename}",
-                instrumental_url=f"/files/{job_id}/no_vocals.mp3" if instrumental_bytes else None,
+                video_url=self._storage.upload_public_url(job_id, filename),
+                instrumental_url=(
+                    self._storage.output_public_url(job_id, "no_vocals.mp3")
+                    if instrumental_bytes
+                    else None
+                ),
                 status="completed",
             )
 
@@ -402,8 +459,10 @@ class JobsService:
         if song.instrumental_url:
             return song.instrumental_url
 
-        # Retrieve the original file name from the video_url (e.g. /uploads/job_id/filename)
-        original_filename = Path(song.video_url).name
+        # Retrieve the original file name from the video_url. Handles both legacy
+        # relative URLs (/uploads/job_id/filename) and absolute Supabase URLs
+        # (…/uploads/job_id/filename[?query]).
+        original_filename = Path((song.video_url or "").split("?", 1)[0]).name
 
         # Download original video/audio from storage to process it
         logger.info("Downloading original file for job %s to separate on-demand", job_id)
@@ -411,14 +470,14 @@ class JobsService:
 
         # Run Demucs audio separation
         logger.info("Starting audio separation for job %s (on-demand)", job_id)
-        instrumental_bytes, _ = self._separation.separate(file_bytes, original_filename, job_id)
+        instrumental_bytes = self._separation.separate(file_bytes, original_filename, job_id)
 
         # Upload the instrumental track
         logger.info("Uploading instrumental track for job %s", job_id)
         self._storage.upload_instrumental(job_id, "no_vocals.mp3", instrumental_bytes)
 
-        # Update DB record with the new instrumental URL
-        song.instrumental_url = f"/files/{job_id}/no_vocals.mp3"
+        # Update DB record with the new instrumental URL (public Supabase URL)
+        song.instrumental_url = self._storage.output_public_url(job_id, "no_vocals.mp3")
         self._songs.update_song(job_id, song)
 
         logger.info("On-demand separation completed successfully for job %s", job_id)

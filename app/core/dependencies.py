@@ -57,7 +57,7 @@ def get_audio_separation_service() -> AudioSeparationService:
 
 @lru_cache(maxsize=1)
 def get_transcription_service() -> TranscriptionService:
-    return TranscriptionService(get_settings())
+    return TranscriptionService(get_settings(), get_audio_conversion_service())
 
 
 @lru_cache(maxsize=1)
