@@ -5,6 +5,7 @@ app/data/uploads/
 app/data/outputs/
 __pycache__/
 *.pyc
+.torch/
 # entorno virtual
 .venv/
 
