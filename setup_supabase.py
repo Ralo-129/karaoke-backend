@@ -57,17 +57,15 @@ CREATE INDEX IF NOT EXISTS idx_songs_artist ON songs(artist);
 ALTER TABLE songs ENABLE ROW LEVEL SECURITY;
 
 -- Create policies
+-- Public can READ the catalog. Writes/deletes go only through the backend
+-- (service role key bypasses RLS), so no public write/delete policy is created.
 DROP POLICY IF EXISTS "Public read" ON songs;
 CREATE POLICY "Public read" ON songs
     FOR SELECT USING (true);
 
+-- Remove old wide-open write/delete policies if a previous setup created them.
 DROP POLICY IF EXISTS "Authenticated write" ON songs;
-CREATE POLICY "Authenticated write" ON songs
-    FOR INSERT WITH CHECK (true);
-
 DROP POLICY IF EXISTS "Authenticated delete" ON songs;
-CREATE POLICY "Authenticated delete" ON songs
-    FOR DELETE USING (true);
 """
 
 print("[SETUP] Setting up Supabase database...")

@@ -26,6 +26,7 @@ class TranscriptionService:
         best_of: int | None = None,
         temperature: float = 0.0,
         use_word_timestamps: bool = True,
+        hint_lyrics: str | None = None,
     ) -> str:
         temp_path = self._settings.data_dir / f"temp-audio-{uuid.uuid4().hex}.wav"
         try:
@@ -41,6 +42,11 @@ class TranscriptionService:
             if title or artist:
                 context_prompt += f"La cancion se llama '{title}' y es de '{artist}'. "
             context_prompt += "Corrige palabras lo mejor posible sin resumir ni traducir."
+            if hint_lyrics:
+                # Bias the model toward the real words. Whisper's prompt has a
+                # limited window, so cap the hint length.
+                snippet = " ".join(hint_lyrics.split())[:600]
+                context_prompt += f" Letra de referencia: {snippet}"
 
             result = model.transcribe(
                 str(temp_path),

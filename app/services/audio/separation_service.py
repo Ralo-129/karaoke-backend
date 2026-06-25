@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import io
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 from demucs.apply import apply_model
 
 from app.services.audio.model_manager import get_demucs_model
@@ -13,9 +11,6 @@ from app.core.config import Settings
 from app.services.audio.conversion_service import AudioConversionService
 
 # Demucs-based separation logic.
-
-
-
 
 
 class AudioSeparationService:
@@ -32,19 +27,33 @@ class AudioSeparationService:
         model_name: str | None = None,
         device: str | None = None,
         mp3_quality: int = 2,
-    ) -> tuple[bytes, bytes]:
+        shifts: int = 1,
+        overlap: float = 0.25,
+        already_wav: bool = False,
+    ) -> bytes:
+        """Separate the instrumental (everything except vocals) and return MP3 bytes.
+
+        - ``already_wav``: when True, ``file_bytes`` is treated as a WAV that was
+          already extracted upstream, so we skip the ffmpeg re-conversion.
+        - ``shifts`` / ``overlap``: control Demucs cost (lower = faster / less RAM).
+
+        The vocal stem is intentionally NOT produced: we only need the karaoke
+        instrumental, so computing/encoding vocals would just waste CPU and memory.
+        """
         model = get_demucs_model(model_name or self._settings.demucs_model, device or self._settings.demucs_device)
         original_suffix = Path(original_filename).suffix.lower() or ".bin"
         temp_input = self._settings.data_dir / f"temp-input-{job_id}{original_suffix}"
         temp_wav = self._settings.data_dir / f"temp-input-{job_id}.wav"
 
-        temp_input.write_bytes(file_bytes)
-
         try:
-            try:
-                self._conversion.convert_to_wav(temp_input, temp_wav)
-            except Exception:
-                temp_wav = temp_input
+            if already_wav:
+                temp_wav.write_bytes(file_bytes)
+            else:
+                temp_input.write_bytes(file_bytes)
+                try:
+                    self._conversion.convert_to_wav(temp_input, temp_wav)
+                except Exception:
+                    temp_wav = temp_input
 
             mix = (
                 self._conversion.load_audio_for_demucs(
@@ -52,7 +61,13 @@ class AudioSeparationService:
                 )
                 .unsqueeze(0)
             )
-            sources = apply_model(model, mix, device=self._settings.demucs_device)
+            sources = apply_model(
+                model,
+                mix,
+                device=self._settings.demucs_device,
+                shifts=shifts,
+                overlap=overlap,
+            )
 
             try:
                 sources_np = sources.detach().cpu().numpy()
@@ -88,27 +103,11 @@ class AudioSeparationService:
                 instrumental_np = instrumental_np / max_val
 
             # Convert instrumental to MP3 bytes to stay under Supabase limits
-            instrumental_bytes = self._conversion.audio_to_mp3_bytes(
+            return self._conversion.audio_to_mp3_bytes(
                 instrumental_np.T,
                 model.samplerate,
                 quality=mp3_quality,
             )
-
-            vocals_bytes = file_bytes
-            if "vocals" in model.sources:
-                vocals_idx = model.sources.index("vocals")
-                vocals_np = sources_np[batch_idx, vocals_idx]
-                if vocals_np.ndim == 2:
-                    vocals_np = vocals_np.mean(axis=0)
-                vocals_max = float(np.max(np.abs(vocals_np))) if vocals_np.size else 0.0
-                if vocals_max > 1.0:
-                    vocals_np = vocals_np / vocals_max
-
-                vocals_buffer = io.BytesIO()
-                sf.write(vocals_buffer, vocals_np, model.samplerate, format="WAV")
-                vocals_bytes = vocals_buffer.getvalue()
-
-            return instrumental_bytes, vocals_bytes
         finally:
             temp_input.unlink(missing_ok=True)
             if temp_wav != temp_input:

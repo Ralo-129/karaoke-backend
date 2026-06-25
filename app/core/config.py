@@ -21,6 +21,7 @@ class Settings:
     supabase_url: str
     supabase_key: str
     supabase_secret: str
+    admin_token: str
     demucs_model: str
     demucs_device: str
     whisper_model: str
@@ -76,7 +77,12 @@ def get_settings() -> Settings:
     uploads_bucket = os.getenv("UPLOADS_BUCKET", "uploads").strip() or "uploads"
     outputs_bucket = os.getenv("OUTPUTS_BUCKET", "outputs").strip() or "outputs"
 
-    demucs_model = os.getenv("DEMUCS_MODEL", "htdemucs_6s").strip() or "htdemucs_6s"
+    # Shared secret required for destructive endpoints (delete song / reset catalog).
+    admin_token = os.getenv("ADMIN_TOKEN", "").strip()
+
+    # Default to the lighter 4-stem model. "htdemucs_6s" (6 stems) is heavier and
+    # unnecessary for karaoke (we only need "everything except vocals").
+    demucs_model = os.getenv("DEMUCS_MODEL", "htdemucs").strip() or "htdemucs"
     demucs_device = os.getenv("DEMUCS_DEVICE", "cpu").strip() or "cpu"
 
     # Prefer a smaller Whisper model by default for low-memory deploys.
@@ -99,6 +105,7 @@ def get_settings() -> Settings:
         supabase_url=supabase_url,
         supabase_key=supabase_key,
         supabase_secret=supabase_secret,
+        admin_token=admin_token,
         demucs_model=demucs_model,
         demucs_device=demucs_device,
         whisper_model=whisper_model,

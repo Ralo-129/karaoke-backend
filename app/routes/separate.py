@@ -43,6 +43,7 @@ async def separate(
             filename=file.filename,
             title=title,
             artist=artist,
+            lyrics=lyrics,
             tags=tags,
             processing_profile=processing_profile,
             extract_lyrics=extract_lyrics,

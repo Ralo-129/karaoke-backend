@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
+from app.core.config import get_settings
 from app.core.dependencies import get_songs_repository, get_storage_service, get_jobs_service
 from app.models.song import to_public
 
@@ -12,6 +14,19 @@ from app.models.song import to_public
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
+    """Guards destructive endpoints. Requires a matching X-Admin-Token header.
+
+    Fails closed: if ADMIN_TOKEN is not configured on the server, destructive
+    operations are disabled entirely (503) instead of being left wide open.
+    """
+    expected = get_settings().admin_token
+    if not expected:
+        raise HTTPException(status_code=503, detail="Admin token not configured on server.")
+    if not x_admin_token or not secrets.compare_digest(x_admin_token, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized.")
 
 
 @router.get("/catalog")
@@ -43,7 +58,7 @@ def separate_song_instrumental(song_id: str) -> dict[str, str]:
 
 
 @router.delete("/catalog/{song_id}")
-def delete_catalog_song(song_id: str) -> dict[str, str]:
+def delete_catalog_song(song_id: str, _: None = Depends(require_admin)) -> dict[str, str]:
     song = get_songs_repository().delete_song(song_id)
     if not song:
         raise HTTPException(status_code=404, detail="Song not found.")
@@ -53,7 +68,7 @@ def delete_catalog_song(song_id: str) -> dict[str, str]:
 
 
 @router.delete("/catalog")
-def reset_catalog() -> dict[str, str]:
+def reset_catalog(_: None = Depends(require_admin)) -> dict[str, str]:
     try:
         get_songs_repository().reset_catalog()
         return {"status": "ok", "message": "Catalog cleared"}
