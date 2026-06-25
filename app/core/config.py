@@ -31,6 +31,8 @@ class Settings:
     whisper_best_of: int
     whisper_download_root: Path
     preload_models: bool
+    groq_api_key: str
+    groq_model: str
     app_title: str = "karaoke-backend"
 
 
@@ -96,6 +98,14 @@ def get_settings() -> Settings:
     )
     preload_models = _bool_env("PRELOAD_MODELS", False)
 
+    # Groq Speech-to-Text. If GROQ_API_KEY is set, transcription uses Groq's
+    # hosted Whisper Large v3 (faster + frees local RAM); otherwise it falls
+    # back to the local openai-whisper model.
+    groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
+    # Default to the most accurate model (best lyrics). Since transcription is a
+    # remote service now, there's no local performance cost to using it.
+    groq_model = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3").strip() or "whisper-large-v3"
+
     settings = Settings(
         app_root=app_root,
         data_dir=data_dir,
@@ -115,6 +125,8 @@ def get_settings() -> Settings:
         whisper_best_of=whisper_best_of,
         whisper_download_root=whisper_download_root,
         preload_models=preload_models,
+        groq_api_key=groq_api_key,
+        groq_model=groq_model,
     )
     _ensure_directories(settings)
     return settings

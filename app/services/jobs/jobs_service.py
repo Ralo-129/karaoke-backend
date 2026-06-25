@@ -30,21 +30,26 @@ _LRC_TIMESTAMP_RE = re.compile(r"\[\d{1,2}:\d{2}(?:\.\d{1,2})?\]")
 
 
 # Notes on resource usage:
-# - demucs_model: "htdemucs" (4 stems) is much lighter than "htdemucs_6s" (6 stems).
-#   For karaoke we only need "everything except vocals", so 4 stems is plenty.
-# - demucs_shifts: test-time augmentation passes. 0 = fastest (no extra passes),
-#   each extra shift roughly multiplies separation time.
-# - demucs_overlap: window overlap between chunks. Lower = faster, slightly lower quality.
+# - Lyrics: transcription runs on Groq (Whisper Large v3) at full quality for ALL
+#   profiles, so word_timestamps is True everywhere (word-by-word karaoke). The
+#   whisper_model / beam / best_of values only matter for the LOCAL fallback when
+#   GROQ_API_KEY is empty or Groq fails.
+# - The 3 profiles really only differ in the INSTRUMENTAL (Demucs), which is the
+#   heavy local step:
+#   - demucs_model: "htdemucs" (4 stems) is much lighter than "htdemucs_6s" (6 stems).
+#   - demucs_shifts: test-time augmentation passes. 0 = fastest, each extra shift
+#     roughly multiplies separation time.
+#   - demucs_overlap: window overlap between chunks. Lower = faster, slightly lower quality.
 PROCESSING_PROFILES: dict[str, dict[str, object]] = {
     "rapido": {
-        "whisper_model": "tiny",
+        "whisper_model": "base",
         "demucs_model": "htdemucs",
         "demucs_shifts": 0,
         "demucs_overlap": 0.1,
         "mp3_quality": 9,
-        "whisper_beam_size": 1,
-        "whisper_best_of": 1,
-        "word_timestamps": False,
+        "whisper_beam_size": 5,
+        "whisper_best_of": 5,
+        "word_timestamps": True,
     },
     "balanceado": {
         "whisper_model": "base",

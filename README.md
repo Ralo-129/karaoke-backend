@@ -19,8 +19,10 @@ Create a `.env` (see `.env.example`):
 | `SUPABASE_SECRET` | yes* | — | Service role key (bypasses RLS). Preferred. |
 | `SUPABASE_KEY` | yes* | — | Anon key (used only if no secret) |
 | `ADMIN_TOKEN` | recommended | — | Shared secret required to delete songs / reset the catalog. If unset, those endpoints return 503 (fail closed). |
+| `GROQ_API_KEY` | recommended | — | If set, transcription uses Groq's hosted Whisper Large v3 (faster, frees RAM). Empty = local Whisper. |
+| `GROQ_WHISPER_MODEL` | no | `whisper-large-v3` | `whisper-large-v3` (max accuracy) or `whisper-large-v3-turbo` (faster). |
 | `DEMUCS_MODEL` | no | `htdemucs` | 4-stem model (lighter). Avoid `htdemucs_6s` (heavier). |
-| `WHISPER_MODEL` | no | `tiny` | Larger = more accurate but heavier |
+| `WHISPER_MODEL` | no | `tiny` | Local fallback model (only used when `GROQ_API_KEY` is empty). |
 | `PRELOAD_MODELS` | no | `false` | Preload models at startup |
 
 \* `SUPABASE_URL` plus one of `SUPABASE_SECRET` / `SUPABASE_KEY` is required.
@@ -69,6 +71,9 @@ decoupled:
 
 ### Lowering resource use
 
+- **Transcription via Groq** (set `GROQ_API_KEY`): offloads Whisper to Groq's API,
+  freeing local RAM/CPU and improving lyric accuracy. Falls back to local Whisper
+  if the key is missing or the call fails. Demucs still runs locally.
 - Default Demucs model is `htdemucs` (4 stems), not `htdemucs_6s` (6 stems).
 - The `rapido` profile uses `shifts=0` / low `overlap` and disables Whisper word
   timestamps for the fastest, lightest processing.

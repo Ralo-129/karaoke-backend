@@ -61,6 +61,33 @@ class AudioConversionService:
             temp_wav.unlink(missing_ok=True)
             temp_mp3.unlink(missing_ok=True)
 
+    def compress_for_transcription(self, wav_bytes: bytes) -> bytes:
+        """Compress audio to mono 16 kHz MP3 for the Groq Speech-to-Text API.
+
+        Whisper internally downsamples to 16 kHz mono anyway, so this keeps full
+        transcription quality while shrinking the file to ~1 MB/min — well under
+        Groq's 25 MB upload limit and much faster to send.
+        """
+        temp_in = self._settings.data_dir / f"temp-stt-in-{uuid.uuid4().hex}.wav"
+        temp_out = self._settings.data_dir / f"temp-stt-out-{uuid.uuid4().hex}.mp3"
+        try:
+            temp_in.write_bytes(wav_bytes)
+            cmd = [
+                "ffmpeg", "-y", "-i", str(temp_in),
+                "-ac", "1", "-ar", "16000",
+                "-codec:a", "libmp3lame", "-qscale:a", "5",
+                str(temp_out),
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"ffmpeg compress failed (code {result.returncode}):\n{result.stderr[-2000:]}"
+                )
+            return temp_out.read_bytes()
+        finally:
+            temp_in.unlink(missing_ok=True)
+            temp_out.unlink(missing_ok=True)
+
     def probe_duration_label(self, file_bytes: bytes, filename: str) -> str:
         temp_path = self._settings.data_dir / f"temp-{uuid.uuid4().hex}-{filename}"
         try:

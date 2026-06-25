@@ -8,4 +8,6 @@ demucs==4.0.1
 soundfile
 openai-whisper
 
+groq>=0.11.0
+
 supabase>=2.0.0
