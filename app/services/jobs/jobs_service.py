@@ -249,6 +249,14 @@ class JobsService:
             self._storage.upload_original(chunk_result.job_id, chunk_result.filename, chunk_result.file_bytes)
         except Exception as e:
             logger.error("Failed to upload original file for job %s: %s", chunk_result.job_id, e)
+            try:
+                self._songs.delete_song(chunk_result.job_id)
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=500,
+                detail="Error al subir el archivo al almacenamiento. Inténtalo de nuevo.",
+            )
 
         if background_tasks is not None:
             self._jobs.set_status(chunk_result.job_id, "processing", 10, "En cola...")

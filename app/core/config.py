@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -38,6 +38,8 @@ class Settings:
     r2_access_key_id: str
     r2_secret_access_key: str
     r2_public_base_url: str
+    cors_origins: list = field(default_factory=lambda: ["*"])
+    max_upload_mb: int = 500
     app_title: str = "karaoke-backend"
 
 
@@ -117,6 +119,11 @@ def get_settings() -> Settings:
     r2_secret_access_key = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
     r2_public_base_url = os.getenv("R2_PUBLIC_BASE_URL", "").strip().rstrip("/")
 
+    raw_cors = os.getenv("CORS_ORIGINS", "*").strip()
+    cors_origins = [o.strip() for o in raw_cors.split(",") if o.strip()] or ["*"]
+
+    max_upload_mb = _int_env("MAX_UPLOAD_MB", 500)
+
     settings = Settings(
         app_root=app_root,
         data_dir=data_dir,
@@ -143,6 +150,8 @@ def get_settings() -> Settings:
         r2_access_key_id=r2_access_key_id,
         r2_secret_access_key=r2_secret_access_key,
         r2_public_base_url=r2_public_base_url,
+        cors_origins=cors_origins,
+        max_upload_mb=max_upload_mb,
     )
     _ensure_directories(settings)
     return settings

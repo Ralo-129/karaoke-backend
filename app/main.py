@@ -6,6 +6,7 @@ import shutil
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.dependencies import get_storage_service
@@ -78,6 +79,12 @@ def create_app() -> FastAPI:
         yield
 
     app = FastAPI(title=settings.app_title, lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     add_logging_middleware(app)
     add_error_handlers(app)
 

@@ -14,9 +14,13 @@ CREATE TABLE IF NOT EXISTS songs (
     tags TEXT[] DEFAULT '{"subido"}',
     video_url TEXT,
     instrumental_url TEXT,
+    status TEXT DEFAULT 'completed',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- Add status column if table already existed without it
+ALTER TABLE songs ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'completed';
 
 -- Create indexes for faster queries
 CREATE INDEX IF NOT EXISTS idx_songs_job_id ON songs(job_id);
