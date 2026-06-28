@@ -33,6 +33,11 @@ class Settings:
     preload_models: bool
     groq_api_key: str
     groq_model: str
+    r2_endpoint: str
+    r2_bucket: str
+    r2_access_key_id: str
+    r2_secret_access_key: str
+    r2_public_base_url: str
     app_title: str = "karaoke-backend"
 
 
@@ -106,6 +111,14 @@ def get_settings() -> Settings:
     # remote service now, there's no local performance cost to using it.
     groq_model = os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3").strip() or "whisper-large-v3"
 
+    # Cloudflare R2 (S3-compatible) for file storage. If configured, files are
+    # served from R2 (free egress) instead of Supabase Storage.
+    r2_endpoint = os.getenv("R2_ENDPOINT", "").strip().rstrip("/")
+    r2_bucket = os.getenv("R2_BUCKET", "karaoke-media").strip() or "karaoke-media"
+    r2_access_key_id = os.getenv("R2_ACCESS_KEY_ID", "").strip()
+    r2_secret_access_key = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
+    r2_public_base_url = os.getenv("R2_PUBLIC_BASE_URL", "").strip().rstrip("/")
+
     settings = Settings(
         app_root=app_root,
         data_dir=data_dir,
@@ -127,6 +140,11 @@ def get_settings() -> Settings:
         preload_models=preload_models,
         groq_api_key=groq_api_key,
         groq_model=groq_model,
+        r2_endpoint=r2_endpoint,
+        r2_bucket=r2_bucket,
+        r2_access_key_id=r2_access_key_id,
+        r2_secret_access_key=r2_secret_access_key,
+        r2_public_base_url=r2_public_base_url,
     )
     _ensure_directories(settings)
     return settings

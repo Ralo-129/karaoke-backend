@@ -12,6 +12,7 @@ from app.services.audio.separation_service import AudioSeparationService
 from app.services.audio.transcription_service import TranscriptionService
 from app.services.jobs.jobs_service import JobsService
 from app.services.storage.database_service import DatabaseService
+from app.services.storage.r2_storage_service import R2StorageService
 from app.services.storage.storage_service import StorageService
 
 
@@ -23,8 +24,11 @@ def get_supabase_client():
 
 
 @lru_cache(maxsize=1)
-def get_storage_service() -> StorageService:
+def get_storage_service():
     settings = get_settings()
+    # Prefer Cloudflare R2 (free egress) when configured; otherwise Supabase Storage.
+    if settings.r2_endpoint and settings.r2_access_key_id and settings.r2_secret_access_key:
+        return R2StorageService(settings)
     return StorageService(get_supabase_client(), settings.uploads_bucket, settings.outputs_bucket)
 
 

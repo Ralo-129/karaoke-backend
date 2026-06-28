@@ -24,6 +24,7 @@ Create a `.env` (see `.env.example`):
 | `DEMUCS_MODEL` | no | `htdemucs` | 4-stem model (lighter). Avoid `htdemucs_6s` (heavier). |
 | `WHISPER_MODEL` | no | `tiny` | Local fallback model (only used when `GROQ_API_KEY` is empty). |
 | `PRELOAD_MODELS` | no | `false` | Preload models at startup |
+| `R2_ENDPOINT` / `R2_BUCKET` / `R2_PUBLIC_BASE_URL` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | recommended | — | Cloudflare R2 (free egress). If set, files are stored/served from R2 instead of Supabase Storage. |
 
 \* `SUPABASE_URL` plus one of `SUPABASE_SECRET` / `SUPABASE_KEY` is required.
 
@@ -65,9 +66,22 @@ decoupled:
 - **Processing** (uploads) needs this backend running. Run it locally (Docker /
   uvicorn) only while adding songs. Avoid tiny free tiers (e.g. Azure F1) — they
   don't have the RAM/CPU and time out.
-- **Playback**: processed files get **public Supabase URLs**, so audio/video
-  stream straight from Supabase (CDN) without the backend. The frontend can be
-  hosted free (Vercel).
+- **Playback**: processed files get **public URLs** (Cloudflare R2 when configured,
+  else Supabase), so audio/video stream straight from storage without the backend.
+  The frontend can be hosted free (Vercel).
+
+### Storage: Cloudflare R2 (free egress)
+
+Set the `R2_*` env vars to store files on R2 (one bucket, `uploads/` and
+`outputs/` prefixes) instead of Supabase Storage. The `songs` table stays in
+Supabase. To move existing files over, run once:
+
+```
+python migrate_to_r2.py
+```
+
+The R2 bucket needs **Public Development URL** enabled and a **CORS** policy
+allowing `GET`.
 
 ### Lowering resource use
 

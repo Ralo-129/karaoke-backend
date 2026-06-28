@@ -10,4 +10,6 @@ openai-whisper
 
 groq>=0.11.0
 
+boto3>=1.34.0
+
 supabase>=2.0.0
