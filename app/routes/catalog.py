@@ -4,7 +4,7 @@ import logging
 import secrets
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 
 from app.core.config import get_settings
 from app.core.dependencies import get_songs_repository, get_storage_service, get_jobs_service
@@ -48,13 +48,18 @@ def get_catalog_song(song_id: str) -> dict[str, Any]:
 
 
 @router.post("/catalog/{song_id}/separate")
-def separate_song_instrumental(song_id: str) -> dict[str, str]:
-    try:
-        instrumental_url = get_jobs_service().separate_instrumental_on_demand(song_id)
-        return {"status": "ok", "instrumental_url": instrumental_url}
-    except Exception as exc:
-        logger.error("On-demand separation failed for song %s: %s", song_id, exc)
-        raise HTTPException(status_code=500, detail=str(exc))
+async def separate_song_instrumental(
+    song_id: str,
+    background_tasks: BackgroundTasks,
+) -> dict[str, str]:
+    song = get_songs_repository().get_song(song_id)
+    if not song:
+        raise HTTPException(status_code=404, detail="Song not found.")
+    if song.instrumental_url:
+        return {"status": "ok", "instrumental_url": song.instrumental_url}
+
+    background_tasks.add_task(get_jobs_service().separate_instrumental_on_demand, song_id)
+    return {"status": "processing", "job_id": song_id, "message": "Separación iniciada."}
 
 
 @router.delete("/catalog/{song_id}")

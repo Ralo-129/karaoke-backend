@@ -426,6 +426,7 @@ class JobsService:
             self._songs.update_song(job_id, song_record)
             song_public = to_public(song_record)
             self._jobs.set_status(job_id, "completed", 100, "Completado", song_public)
+            self._jobs.clear(job_id)
 
             return {
                 "job_id": job_id,
@@ -453,10 +454,6 @@ class JobsService:
             }
 
     def separate_instrumental_on_demand(self, job_id: str) -> str:
-        """
-        Runs Demucs on-demand for a completed song that doesn't have an instrumental yet,
-        uploads it to storage, updates the DB, and returns the URL.
-        """
         song = self._songs.get_song(job_id)
         if not song:
             raise ValueError("Song not found.")
@@ -464,29 +461,30 @@ class JobsService:
         if song.instrumental_url:
             return song.instrumental_url
 
-        # Retrieve the original file name from the video_url. Handles both legacy
-        # relative URLs (/uploads/job_id/filename) and absolute Supabase URLs
-        # (…/uploads/job_id/filename[?query]).
         original_filename = Path((song.video_url or "").split("?", 1)[0]).name
 
-        # Download original video/audio from storage to process it
-        logger.info("Downloading original file for job %s to separate on-demand", job_id)
-        file_bytes = self._storage.download_upload(job_id, original_filename)
+        try:
+            self._jobs.set_status(job_id, "processing", 10, "Descargando archivo original...")
+            file_bytes = self._storage.download_upload(job_id, original_filename)
 
-        # Run Demucs audio separation
-        logger.info("Starting audio separation for job %s (on-demand)", job_id)
-        instrumental_bytes = self._separation.separate(file_bytes, original_filename, job_id)
+            self._jobs.set_status(job_id, "processing", 40, "Separando voz...")
+            instrumental_bytes = self._separation.separate(file_bytes, original_filename, job_id)
 
-        # Upload the instrumental track
-        logger.info("Uploading instrumental track for job %s", job_id)
-        self._storage.upload_instrumental(job_id, "no_vocals.mp3", instrumental_bytes)
+            self._jobs.set_status(job_id, "processing", 85, "Subiendo instrumental...")
+            self._storage.upload_instrumental(job_id, "no_vocals.mp3", instrumental_bytes)
 
-        # Update DB record with the new instrumental URL (public Supabase URL)
-        song.instrumental_url = self._storage.output_public_url(job_id, "no_vocals.mp3")
-        self._songs.update_song(job_id, song)
+            song.instrumental_url = self._storage.output_public_url(job_id, "no_vocals.mp3")
+            self._songs.update_song(job_id, song)
 
-        logger.info("On-demand separation completed successfully for job %s", job_id)
-        return song.instrumental_url
+            self._jobs.set_status(job_id, "completed", 100, "Completado")
+            self._jobs.clear(job_id)
+            logger.info("On-demand separation completed for job %s", job_id)
+            return song.instrumental_url
+        except Exception as exc:
+            message = str(exc).strip() or "Error durante la separación."
+            logger.error("On-demand separation failed for job %s: %s", job_id, message)
+            self._jobs.set_status(job_id, "error", 0, message)
+            raise
 
     def get_status(self, job_id: str) -> dict[str, object]:
         status = self._jobs.get_status(job_id)

@@ -51,6 +51,13 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        for temp_file in settings.data_dir.glob("temp-*"):
+            try:
+                temp_file.unlink()
+                logger.info("Limpiando archivo temporal huérfano: %s", temp_file.name)
+            except Exception:
+                pass
+
         get_storage_service().ensure_buckets()
         ffmpeg_path = shutil.which("ffmpeg")
         if ffmpeg_path:
