@@ -43,9 +43,7 @@ class Settings:
 
 def _require(value: str, name: str) -> str:
     if not value:
-        raise ValueError(
-            "SUPABASE_URL and SUPABASE_KEY or SUPABASE_SECRET must be set in environment variables"
-        )
+        raise ValueError(f"{name} must be set in environment variables")
     return value
 
 

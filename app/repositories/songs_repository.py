@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Iterable
-
 from app.models.song import SongRecord
 from app.services.storage.database_service import DatabaseService
 

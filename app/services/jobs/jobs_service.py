@@ -147,14 +147,19 @@ class JobsService:
                 f"Missing chunks: {missing_chunks}. Received {total_chunks - len(missing_chunks)}/{total_chunks}."
             )
 
-        file_content = b""
+        chunks_data = []
         for index in range(total_chunks):
             chunk_file = chunk_dir / f"chunk_{index:06d}"
-            chunk_data = chunk_file.read_bytes()
-            file_content += chunk_data
+            chunks_data.append(chunk_file.read_bytes())
             chunk_file.unlink()
 
-        chunk_dir.rmdir()
+        file_content = b"".join(chunks_data)
+        del chunks_data
+
+        try:
+            chunk_dir.rmdir()
+        except OSError:
+            pass
         if not file_content:
             raise ValidationError("Reassembled file is empty.")
 
@@ -323,13 +328,13 @@ class JobsService:
 
             # 2. Start fast processing (just extracting audio and transcribing)
             self._jobs.set_status(job_id, "processing", 15, "Preparando audio...")
-            duration = self._conversion.probe_duration_label(file_bytes, filename)
 
             # Extract the raw WAV bytes of the original audio track from the video
             original_suffix = Path(filename).suffix.lower() or ".bin"
             temp_input = self._settings.data_dir / f"temp-extract-{job_id}{original_suffix}"
             temp_wav = self._settings.data_dir / f"temp-extract-{job_id}.wav"
             temp_input.write_bytes(file_bytes)
+            duration = self._conversion.probe_duration_from_path(temp_input)
             
             self._jobs.set_status(job_id, "processing", 25, "Extrayendo audio...")
             try:
