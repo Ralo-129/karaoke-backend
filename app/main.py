@@ -6,6 +6,7 @@ import shutil
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import get_settings
 from app.core.dependencies import get_storage_service
@@ -51,6 +52,13 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        for temp_file in settings.data_dir.glob("temp-*"):
+            try:
+                temp_file.unlink()
+                logger.info("Limpiando archivo temporal huérfano: %s", temp_file.name)
+            except Exception:
+                pass
+
         get_storage_service().ensure_buckets()
         ffmpeg_path = shutil.which("ffmpeg")
         if ffmpeg_path:
@@ -71,6 +79,12 @@ def create_app() -> FastAPI:
         yield
 
     app = FastAPI(title=settings.app_title, lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     add_logging_middleware(app)
     add_error_handlers(app)
 

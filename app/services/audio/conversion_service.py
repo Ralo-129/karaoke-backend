@@ -88,10 +88,8 @@ class AudioConversionService:
             temp_in.unlink(missing_ok=True)
             temp_out.unlink(missing_ok=True)
 
-    def probe_duration_label(self, file_bytes: bytes, filename: str) -> str:
-        temp_path = self._settings.data_dir / f"temp-{uuid.uuid4().hex}-{filename}"
+    def probe_duration_from_path(self, path: Path) -> str:
         try:
-            temp_path.write_bytes(file_bytes)
             command = [
                 "ffprobe",
                 "-v",
@@ -100,11 +98,17 @@ class AudioConversionService:
                 "format=duration",
                 "-of",
                 "default=noprint_wrappers=1:nokey=1",
-                str(temp_path),
+                str(path),
             ]
             result = subprocess.run(command, capture_output=True, text=True, check=True)
             return format_duration(float(result.stdout.strip()))
         except Exception:
             return "--:--"
+
+    def probe_duration_label(self, file_bytes: bytes, filename: str) -> str:
+        temp_path = self._settings.data_dir / f"temp-{uuid.uuid4().hex}-{filename}"
+        try:
+            temp_path.write_bytes(file_bytes)
+            return self.probe_duration_from_path(temp_path)
         finally:
             temp_path.unlink(missing_ok=True)

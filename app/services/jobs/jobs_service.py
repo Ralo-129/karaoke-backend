@@ -147,14 +147,19 @@ class JobsService:
                 f"Missing chunks: {missing_chunks}. Received {total_chunks - len(missing_chunks)}/{total_chunks}."
             )
 
-        file_content = b""
+        chunks_data = []
         for index in range(total_chunks):
             chunk_file = chunk_dir / f"chunk_{index:06d}"
-            chunk_data = chunk_file.read_bytes()
-            file_content += chunk_data
+            chunks_data.append(chunk_file.read_bytes())
             chunk_file.unlink()
 
-        chunk_dir.rmdir()
+        file_content = b"".join(chunks_data)
+        del chunks_data
+
+        try:
+            chunk_dir.rmdir()
+        except OSError:
+            pass
         if not file_content:
             raise ValidationError("Reassembled file is empty.")
 
@@ -244,6 +249,14 @@ class JobsService:
             self._storage.upload_original(chunk_result.job_id, chunk_result.filename, chunk_result.file_bytes)
         except Exception as e:
             logger.error("Failed to upload original file for job %s: %s", chunk_result.job_id, e)
+            try:
+                self._songs.delete_song(chunk_result.job_id)
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=500,
+                detail="Error al subir el archivo al almacenamiento. Inténtalo de nuevo.",
+            )
 
         if background_tasks is not None:
             self._jobs.set_status(chunk_result.job_id, "processing", 10, "En cola...")
@@ -323,13 +336,13 @@ class JobsService:
 
             # 2. Start fast processing (just extracting audio and transcribing)
             self._jobs.set_status(job_id, "processing", 15, "Preparando audio...")
-            duration = self._conversion.probe_duration_label(file_bytes, filename)
 
             # Extract the raw WAV bytes of the original audio track from the video
             original_suffix = Path(filename).suffix.lower() or ".bin"
             temp_input = self._settings.data_dir / f"temp-extract-{job_id}{original_suffix}"
             temp_wav = self._settings.data_dir / f"temp-extract-{job_id}.wav"
             temp_input.write_bytes(file_bytes)
+            duration = self._conversion.probe_duration_from_path(temp_input)
             
             self._jobs.set_status(job_id, "processing", 25, "Extrayendo audio...")
             try:
@@ -421,6 +434,7 @@ class JobsService:
             self._songs.update_song(job_id, song_record)
             song_public = to_public(song_record)
             self._jobs.set_status(job_id, "completed", 100, "Completado", song_public)
+            self._jobs.clear(job_id)
 
             return {
                 "job_id": job_id,
@@ -448,10 +462,6 @@ class JobsService:
             }
 
     def separate_instrumental_on_demand(self, job_id: str) -> str:
-        """
-        Runs Demucs on-demand for a completed song that doesn't have an instrumental yet,
-        uploads it to storage, updates the DB, and returns the URL.
-        """
         song = self._songs.get_song(job_id)
         if not song:
             raise ValueError("Song not found.")
@@ -459,29 +469,30 @@ class JobsService:
         if song.instrumental_url:
             return song.instrumental_url
 
-        # Retrieve the original file name from the video_url. Handles both legacy
-        # relative URLs (/uploads/job_id/filename) and absolute Supabase URLs
-        # (…/uploads/job_id/filename[?query]).
         original_filename = Path((song.video_url or "").split("?", 1)[0]).name
 
-        # Download original video/audio from storage to process it
-        logger.info("Downloading original file for job %s to separate on-demand", job_id)
-        file_bytes = self._storage.download_upload(job_id, original_filename)
+        try:
+            self._jobs.set_status(job_id, "processing", 10, "Descargando archivo original...")
+            file_bytes = self._storage.download_upload(job_id, original_filename)
 
-        # Run Demucs audio separation
-        logger.info("Starting audio separation for job %s (on-demand)", job_id)
-        instrumental_bytes = self._separation.separate(file_bytes, original_filename, job_id)
+            self._jobs.set_status(job_id, "processing", 40, "Separando voz...")
+            instrumental_bytes = self._separation.separate(file_bytes, original_filename, job_id)
 
-        # Upload the instrumental track
-        logger.info("Uploading instrumental track for job %s", job_id)
-        self._storage.upload_instrumental(job_id, "no_vocals.mp3", instrumental_bytes)
+            self._jobs.set_status(job_id, "processing", 85, "Subiendo instrumental...")
+            self._storage.upload_instrumental(job_id, "no_vocals.mp3", instrumental_bytes)
 
-        # Update DB record with the new instrumental URL (public Supabase URL)
-        song.instrumental_url = self._storage.output_public_url(job_id, "no_vocals.mp3")
-        self._songs.update_song(job_id, song)
+            song.instrumental_url = self._storage.output_public_url(job_id, "no_vocals.mp3")
+            self._songs.update_song(job_id, song)
 
-        logger.info("On-demand separation completed successfully for job %s", job_id)
-        return song.instrumental_url
+            self._jobs.set_status(job_id, "completed", 100, "Completado")
+            self._jobs.clear(job_id)
+            logger.info("On-demand separation completed for job %s", job_id)
+            return song.instrumental_url
+        except Exception as exc:
+            message = str(exc).strip() or "Error durante la separación."
+            logger.error("On-demand separation failed for job %s: %s", job_id, message)
+            self._jobs.set_status(job_id, "error", 0, message)
+            raise
 
     def get_status(self, job_id: str) -> dict[str, object]:
         status = self._jobs.get_status(job_id)

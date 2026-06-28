@@ -8,6 +8,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
+from app.core.config import get_settings
 from app.core.dependencies import get_jobs_service, get_storage_service
 
 # Upload and separation endpoints.
@@ -34,8 +35,16 @@ async def separate(
     if not file:
         raise HTTPException(status_code=400, detail="Missing file.")
 
-    file_bytes = await file.read()
+    settings = get_settings()
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+    file_bytes = await file.read(max_bytes + 1)
     await file.close()
+
+    if len(file_bytes) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Archivo demasiado grande. Límite: {settings.max_upload_mb} MB.",
+        )
 
     try:
         return await get_jobs_service().handle_upload(
