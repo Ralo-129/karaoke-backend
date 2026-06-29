@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 
 from app.core.config import Settings
@@ -12,6 +13,8 @@ from app.services.audio.model_manager import get_whisper_model
 # local openai-whisper model otherwise (or if the Groq call fails).
 
 logger = logging.getLogger(__name__)
+
+_LRC_WORD_TAG_RE = re.compile(r"<\d{2}:\d{2}\.\d{2}>")
 
 _YOUTUBE_ARTIFACTS = {
     "gracias por ver",
@@ -26,6 +29,7 @@ _YOUTUBE_ARTIFACTS = {
     "subtitulado por",
     "subtítulos por",
     "nos vemos",
+    "gracias por ver el video",
 }
 
 
@@ -112,8 +116,25 @@ class TranscriptionService:
 
     @staticmethod
     def _is_artifact(text: str) -> bool:
-        clean = text.lower().strip().rstrip(".,!¡¿?")
-        return any(artifact in clean for artifact in _YOUTUBE_ARTIFACTS)
+        # Strip <mm:ss.cc> tags, collapse resulting double-spaces, then search.
+        words_only = " ".join(_LRC_WORD_TAG_RE.sub("", text).split()).lower().rstrip(".,!¡¿?")
+        return any(artifact in words_only for artifact in _YOUTUBE_ARTIFACTS)
+
+    @staticmethod
+    def _remove_artifact_words(words: list[dict]) -> list[dict]:
+        if not words:
+            return words
+        plain = [re.sub(r"[.,!¡¿? ]+", "", w["word"]).lower() for w in words]
+        indices_to_remove: set[int] = set()
+        for artifact in _YOUTUBE_ARTIFACTS:
+            artifact_parts = artifact.split()
+            n = len(artifact_parts)
+            for i in range(len(plain) - n + 1):
+                if plain[i : i + n] == artifact_parts:
+                    indices_to_remove.update(range(i, i + n))
+        if not indices_to_remove:
+            return words
+        return [w for i, w in enumerate(words) if i not in indices_to_remove]
 
     @staticmethod
     def _is_valid_segment(seg_words: list[dict]) -> bool:
@@ -139,7 +160,7 @@ class TranscriptionService:
             line_text = ""
             words = segment.get("words") or []
             if use_word_timestamps and words:
-                for w in words:
+                for w in self._remove_artifact_words(words):
                     ws = float(w.get("start") or 0.0)
                     wm = int(ws // 60)
                     ws_s = int(ws % 60)
@@ -149,9 +170,11 @@ class TranscriptionService:
                         line_text += f"<{wm:02d}:{ws_s:02d}.{wc:02d}> {word_clean} "
             else:
                 line_text = (segment.get("text") or "").strip()
+                if self._is_artifact(line_text):
+                    continue
 
             clean = line_text.strip()
-            if clean and not self._is_artifact(clean):
+            if clean:
                 lrc_lines.append(f"[{m:02d}:{s:02d}.{c:02d}] {clean}")
 
         return "\n".join(lrc_lines)
